@@ -1,5 +1,6 @@
 NAME=mihomo
 BINDIR=bin
+LOCAL_GOWORK=$(CURDIR)/go.local.work
 BRANCH=$(shell git branch --show-current)
 ifeq ($(BRANCH),Alpha)
 VERSION=alpha-$(shell git rev-parse --short HEAD)
@@ -63,6 +64,12 @@ all:linux-amd64-v3 linux-arm64\
 
 
 darwin-all: darwin-amd64-v3 darwin-arm64
+
+.PHONY: build-local-sing-tun
+build-local-sing-tun:
+	@test -f ../sing-tun/go.mod || { echo "Local sing-tun repository not found at ../sing-tun"; exit 1; }
+	@mkdir -p $(BINDIR)
+	GOWORK=$(LOCAL_GOWORK) $(MAKE) -B linux-amd64 linux-arm64 darwin-arm64
 
 docker:
 	GOAMD64=v1 $(GOBUILD) -o $(BINDIR)/$(NAME)-$@
@@ -203,4 +210,3 @@ clean:
 
 CLANG ?= clang-14
 CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
-

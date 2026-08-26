@@ -416,6 +416,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		ExcludeMACAddress:                     excludeMACAddress,
 		FileDescriptor:                        options.FileDescriptor,
 		InterfaceMonitor:                      defaultInterfaceMonitor,
+		Logger:                                log.SingLogger,
 		EXP_RecvMsgX:                          options.RecvMsgX,
 		EXP_SendMsgX:                          options.SendMsgX,
 		EXP_ProcessorsPerChannel:              options.ProcessorsPerChannel,

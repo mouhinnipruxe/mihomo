@@ -13,7 +13,10 @@ type URLTestType uint8
 const (
 	URLTestTypeDefault URLTestType = iota
 	URLTestTypeDockerRegistry
+	URLTestTypeClaude
 )
+
+const ClaudeTestURL = "https://claude.ai/"
 
 func (t URLTestType) String() string {
 	switch t {
@@ -21,6 +24,8 @@ func (t URLTestType) String() string {
 		return "default"
 	case URLTestTypeDockerRegistry:
 		return "docker-registry"
+	case URLTestTypeClaude:
+		return "claude-test"
 	default:
 		return "unknown"
 	}
@@ -32,12 +37,17 @@ func ParseURLTestType(value string) (URLTestType, error) {
 		return URLTestTypeDefault, nil
 	case "docker-registry":
 		return URLTestTypeDockerRegistry, nil
+	case "claude-test":
+		return URLTestTypeClaude, nil
 	default:
 		return URLTestTypeDefault, fmt.Errorf("unsupported URL test type: %s", value)
 	}
 }
 
-func URLTestURL(_ URLTestType, configuredURL string) string {
+func URLTestURL(testType URLTestType, configuredURL string) string {
+	if testType == URLTestTypeClaude {
+		return ClaudeTestURL
+	}
 	return configuredURL
 }
 

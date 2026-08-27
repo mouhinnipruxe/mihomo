@@ -163,6 +163,53 @@ func TestDockerRegistryURLTestTypeRegistersWithUsedProvider(t *testing.T) {
 	}
 }
 
+func TestClaudeURLTestTypeUsesFixedURLForAllGroupTypes(t *testing.T) {
+	for _, groupType := range []string{"url-test", "fallback", "load-balance", "select"} {
+		groupType := groupType
+		t.Run(groupType, func(t *testing.T) {
+			t.Parallel()
+
+			group, err := G.ParseProxyGroup(map[string]any{
+				"name":      "test",
+				"type":      groupType,
+				"proxies":   []string{"DIRECT"},
+				"url":       "https://ignored.example/",
+				"test-type": "claude-test",
+			}, newProxyMap(), map[string]P.ProxyProvider{}, nil, nil)
+			if err != nil {
+				t.Fatalf("ParseProxyGroup: %v", err)
+			}
+			providers := group.Providers()
+			if len(providers) != 1 {
+				t.Fatalf("providers = %d, want 1", len(providers))
+			}
+			if got := providers[0].HealthCheckURL(); got != C.ClaudeTestURL {
+				t.Fatalf("health check URL = %q, want %q", got, C.ClaudeTestURL)
+			}
+		})
+	}
+}
+
+func TestClaudeURLTestTypeRegistersFixedURLWithUsedProvider(t *testing.T) {
+	provider := &recordingProvider{healthCheckURL: "https://provider.example/health"}
+	_, err := G.ParseProxyGroup(map[string]any{
+		"name":      "test",
+		"type":      "select",
+		"use":       []string{"provider"},
+		"url":       "https://ignored.example/",
+		"test-type": "claude-test",
+	}, newProxyMap(), map[string]P.ProxyProvider{"provider": provider}, nil, nil)
+	if err != nil {
+		t.Fatalf("ParseProxyGroup: %v", err)
+	}
+	if provider.registeredType != C.URLTestTypeClaude {
+		t.Fatalf("registered type = %s, want claude-test", provider.registeredType)
+	}
+	if provider.registeredURL != C.ClaudeTestURL {
+		t.Fatalf("registered URL = %q, want %q", provider.registeredURL, C.ClaudeTestURL)
+	}
+}
+
 func parseDockerRegistryGroup(t *testing.T, groupType, manifestURL string) G.ProxyGroup {
 	t.Helper()
 

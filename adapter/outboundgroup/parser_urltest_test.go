@@ -17,7 +17,56 @@ import (
 	P "github.com/metacubex/mihomo/constant/provider"
 )
 
+func TestProxyGroupDockerRegistryFallsBackWithoutDocker(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodHead {
+			t.Errorf("method = %s, want HEAD", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	for _, groupType := range []string{"url-test", "fallback", "load-balance", "select"} {
+		t.Run(groupType, func(t *testing.T) {
+			before := requests.Load()
+			group := parseDockerRegistryGroup(t, groupType, server.URL)
+			delays, err := group.URLTest(context.Background(), server.URL, nil)
+			if err != nil {
+				t.Fatalf("group URL test failed: %v", err)
+			}
+			if _, ok := delays["DIRECT"]; !ok {
+				t.Fatal("group URL test did not return DIRECT result")
+			}
+			if got := requests.Load() - before; got != 1 {
+				t.Fatalf("requests = %d, want one default URL test", got)
+			}
+
+			data, err := json.Marshal(A.NewProxy(group))
+			if err != nil {
+				t.Fatalf("MarshalJSON: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("UnmarshalJSON: %v", err)
+			}
+			if got := payload["testType"]; got != "default" {
+				t.Fatalf("testType = %v, want default", got)
+			}
+		})
+	}
+
+	if got := requests.Load(); got != 4 {
+		t.Fatalf("requests = %d, want one default URL test per group", got)
+	}
+}
+
 func TestProxyGroupDockerRegistryURLTest(t *testing.T) {
+	requireDockerRegistryURLTest(t)
+
 	for _, groupType := range []string{"url-test", "fallback", "load-balance", "select"} {
 		groupType := groupType
 		t.Run(groupType, func(t *testing.T) {
@@ -42,6 +91,8 @@ func TestProxyGroupDockerRegistryURLTest(t *testing.T) {
 }
 
 func TestProxyGroupMarshalJSONIncludesURLTestType(t *testing.T) {
+	requireDockerRegistryURLTest(t)
+
 	for _, groupType := range []string{"url-test", "fallback", "load-balance", "select"} {
 		groupType := groupType
 		t.Run(groupType, func(t *testing.T) {
@@ -64,6 +115,7 @@ func TestProxyGroupMarshalJSONIncludesURLTestType(t *testing.T) {
 }
 
 func TestCompatibleProviderUsesGroupDockerRegistryURLTest(t *testing.T) {
+	requireDockerRegistryURLTest(t)
 	t.Parallel()
 
 	manifestURL, requests, closeServer := newDockerRegistryTestServer(t)
@@ -81,6 +133,7 @@ func TestCompatibleProviderUsesGroupDockerRegistryURLTest(t *testing.T) {
 }
 
 func TestFallbackSetUsesDockerRegistryURLTest(t *testing.T) {
+	requireDockerRegistryURLTest(t)
 	t.Parallel()
 
 	manifestURL, requests, closeServer := newDockerRegistryTestServer(t)
@@ -134,6 +187,8 @@ func TestProxyGroupRejectsUnknownURLTestType(t *testing.T) {
 }
 
 func TestDockerRegistryURLTestTypeRegistersWithUsedProvider(t *testing.T) {
+	requireDockerRegistryURLTest(t)
+
 	for _, explicitURL := range []bool{false, true} {
 		explicitURL := explicitURL
 		t.Run(map[bool]string{false: "inherited URL", true: "explicit URL"}[explicitURL], func(t *testing.T) {
@@ -160,6 +215,17 @@ func TestDockerRegistryURLTestTypeRegistersWithUsedProvider(t *testing.T) {
 				t.Fatalf("registered URL = %q, want %q", provider.registeredURL, provider.healthCheckURL)
 			}
 		})
+	}
+}
+
+func requireDockerRegistryURLTest(t *testing.T) {
+	t.Helper()
+	testType, err := C.ParseURLTestType("docker-registry")
+	if err != nil {
+		t.Fatalf("ParseURLTestType: %v", err)
+	}
+	if testType != C.URLTestTypeDockerRegistry {
+		t.Skip("docker executable is not available")
 	}
 }
 

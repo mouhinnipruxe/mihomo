@@ -3,6 +3,7 @@ package constant
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/metacubex/mihomo/common/utils"
@@ -36,12 +37,21 @@ func ParseURLTestType(value string) (URLTestType, error) {
 	case "", "default":
 		return URLTestTypeDefault, nil
 	case "docker-registry":
-		return URLTestTypeDockerRegistry, nil
+		return availableURLTestType(URLTestTypeDockerRegistry), nil
 	case "claude-test":
 		return URLTestTypeClaude, nil
 	default:
 		return URLTestTypeDefault, fmt.Errorf("unsupported URL test type: %s", value)
 	}
+}
+
+func availableURLTestType(testType URLTestType) URLTestType {
+	if testType == URLTestTypeDockerRegistry {
+		if _, err := exec.LookPath("docker"); err != nil {
+			return URLTestTypeDefault
+		}
+	}
+	return testType
 }
 
 func URLTestURL(testType URLTestType, configuredURL string) string {
@@ -61,6 +71,7 @@ type URLTesterWithOptions interface {
 }
 
 func URLTestWithOptions(proxy Proxy, ctx context.Context, url string, options URLTestOptions) (uint16, error) {
+	options.Type = availableURLTestType(options.Type)
 	url = URLTestURL(options.Type, url)
 	if tester, ok := proxy.(URLTesterWithOptions); ok {
 		return tester.URLTestWithOptions(ctx, url, options)

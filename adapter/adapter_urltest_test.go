@@ -44,6 +44,7 @@ func TestURLTestWithOptionsDefaultUsesExistingHeadTest(t *testing.T) {
 }
 
 func TestDockerRegistryURLTestUsesIndependentConnections(t *testing.T) {
+	requireDockerRegistryURLTest(t)
 	t.Parallel()
 
 	var connections atomic.Int32
@@ -106,6 +107,8 @@ func TestDockerRegistryURLTestUsesIndependentConnections(t *testing.T) {
 }
 
 func TestDockerRegistryURLTestDelayMatchesUnifiedDelaySemantics(t *testing.T) {
+	requireDockerRegistryURLTest(t)
+
 	previous := A.UnifiedDelay.Load()
 	t.Cleanup(func() {
 		A.UnifiedDelay.Store(previous)
@@ -163,6 +166,7 @@ func TestDockerRegistryURLTestDelayMatchesUnifiedDelaySemantics(t *testing.T) {
 }
 
 func TestDockerRegistryURLTestFailsWhenSecondConnectionCloses(t *testing.T) {
+	requireDockerRegistryURLTest(t)
 	t.Parallel()
 
 	var connections atomic.Int32
@@ -208,6 +212,8 @@ func TestDockerRegistryURLTestFailsWhenSecondConnectionCloses(t *testing.T) {
 }
 
 func TestDockerRegistryURLTestRejectsInvalidResponses(t *testing.T) {
+	requireDockerRegistryURLTest(t)
+
 	tests := []struct {
 		name           string
 		manifestStatus int
@@ -279,6 +285,17 @@ func TestDockerRegistryURLTestRejectsInvalidResponses(t *testing.T) {
 				t.Fatal("proxy remains available after invalid Docker registry response")
 			}
 		})
+	}
+}
+
+func requireDockerRegistryURLTest(t *testing.T) {
+	t.Helper()
+	testType, err := C.ParseURLTestType("docker-registry")
+	if err != nil {
+		t.Fatalf("ParseURLTestType: %v", err)
+	}
+	if testType != C.URLTestTypeDockerRegistry {
+		t.Skip("docker executable is not available")
 	}
 }
 

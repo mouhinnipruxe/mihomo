@@ -1767,7 +1767,7 @@ proxy-groups:
     # tolerance: 150
     # lazy: true
     # expected-status: 204 # 当健康检查返回状态码与期望值不符时，认为节点不可用
-    # test-type: docker-registry # 使用两条独立连接依次请求 Registry manifest 和 token；同样适用于 fallback、load-balance、select
+    # test-type: docker-registry # 系统存在 docker 命令时，使用两条独立连接依次请求 Registry manifest 和 token；否则回退默认 URL test；同样适用于 fallback、load-balance、select
     # test-type: claude-test # 固定测试 https://claude.ai/，响应跳转到 app-unavailable-in-region 时认为节点不可用
     url: "https://cp.cloudflare.com/generate_204"
     interval: 300

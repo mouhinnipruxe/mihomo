@@ -14,6 +14,7 @@ import (
 )
 
 func TestDockerRegistryTaskUpgradesDefaultHealthCheck(t *testing.T) {
+	requireDockerRegistryURLTest(t)
 	t.Parallel()
 
 	manifestURL, requests, closeServer := newRegistryServer(t)
@@ -34,6 +35,7 @@ func TestDockerRegistryTaskUpgradesDefaultHealthCheck(t *testing.T) {
 }
 
 func TestDockerRegistryTaskUpgradesExistingExtraHealthCheck(t *testing.T) {
+	requireDockerRegistryURLTest(t)
 	t.Parallel()
 
 	manifestURL, requests, closeServer := newRegistryServer(t)
@@ -52,6 +54,17 @@ func TestDockerRegistryTaskUpgradesExistingExtraHealthCheck(t *testing.T) {
 	provider.HealthCheck()
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests = %d, want 2", got)
+	}
+}
+
+func requireDockerRegistryURLTest(t *testing.T) {
+	t.Helper()
+	testType, err := C.ParseURLTestType("docker-registry")
+	if err != nil {
+		t.Fatalf("ParseURLTestType: %v", err)
+	}
+	if testType != C.URLTestTypeDockerRegistry {
+		t.Skip("docker executable is not available")
 	}
 }
 

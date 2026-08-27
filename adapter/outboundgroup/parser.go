@@ -38,11 +38,17 @@ type GroupCommonOption struct {
 	ExcludeFilter       string   `group:"exclude-filter,omitempty"`
 	ExcludeType         string   `group:"exclude-type,omitempty"`
 	ExpectedStatus      string   `group:"expected-status,omitempty"`
+	TestType            string   `group:"test-type,omitempty"`
 	IncludeAll          bool     `group:"include-all,omitempty"`
 	IncludeAllProxies   bool     `group:"include-all-proxies,omitempty"`
 	IncludeAllProviders bool     `group:"include-all-providers,omitempty"`
 	Hidden              bool     `group:"hidden,omitempty"`
 	Icon                string   `group:"icon,omitempty"`
+}
+
+func (o GroupCommonOption) urlTestType() C.URLTestType {
+	testType, _ := C.ParseURLTestType(o.TestType)
+	return testType
 }
 
 func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, providersMap map[string]P.ProxyProvider, AllProxies []string, AllProviders []string) (ProxyGroup, error) {
@@ -70,6 +76,11 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	}
 
 	groupName := groupOption.Name
+	testType, err := C.ParseURLTestType(groupOption.TestType)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", groupName, err)
+	}
+	groupOption.URL = C.URLTestURL(testType, groupOption.URL)
 
 	if groupOption.EmptyFallback == "" {
 		groupOption.EmptyFallback = "COMPATIBLE"
@@ -146,8 +157,15 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 			if groupOption.URL == "" {
 				groupOption.URL = C.DefaultTestURL
 			}
+			if testType != C.URLTestTypeDefault {
+				if err := addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, uint(groupOption.Interval), testType); err != nil {
+					return nil, fmt.Errorf("%s: %w", groupName, err)
+				}
+			}
 		} else {
-			addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, uint(groupOption.Interval))
+			if err := addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, uint(groupOption.Interval), testType); err != nil {
+				return nil, fmt.Errorf("%s: %w", groupName, err)
+			}
 		}
 		providers = append(providers, PDs...)
 	}
@@ -173,7 +191,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 			}
 		}
 
-		hc := provider.NewHealthCheck(ps, groupOption.URL, uint(groupOption.TestTimeout), uint(groupOption.Interval), groupOption.Lazy, expectedStatus)
+		hc := provider.NewHealthCheckWithTestType(ps, groupOption.URL, uint(groupOption.TestTimeout), uint(groupOption.Interval), groupOption.Lazy, expectedStatus, testType)
 
 		pd, err := provider.NewCompatibleProvider(groupName, ps, hc)
 		if err != nil {
@@ -248,12 +266,21 @@ func getProviders(mapping map[string]P.ProxyProvider, list []string) ([]P.ProxyP
 	return ps, nil
 }
 
-func addTestUrlToProviders(providers []P.ProxyProvider, url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
+func addTestUrlToProviders(providers []P.ProxyProvider, url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint, testType C.URLTestType) error {
 	if len(providers) == 0 || len(url) == 0 {
-		return
+		return nil
 	}
 
 	for _, pd := range providers {
-		pd.RegisterHealthCheckTask(url, expectedStatus, filter, interval)
+		if testType == C.URLTestTypeDefault {
+			pd.RegisterHealthCheckTask(url, expectedStatus, filter, interval)
+			continue
+		}
+		providerWithOptions, ok := pd.(P.ProxyProviderWithHealthCheckOptions)
+		if !ok {
+			return fmt.Errorf("proxy provider %s does not support URL test type %s", pd.Name(), testType)
+		}
+		providerWithOptions.RegisterHealthCheckTaskWithOptions(url, expectedStatus, filter, interval, testType)
 	}
+	return nil
 }

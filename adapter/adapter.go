@@ -167,36 +167,7 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	var satisfied bool
 
 	defer func() {
-		alive := err == nil
-		record := C.DelayHistory{Time: time.Now()}
-		if alive {
-			record.Delay = t
-		}
-
-		p.alive.Store(alive)
-		p.history.Put(record)
-		if p.history.Len() > defaultHistoriesNum {
-			p.history.Pop()
-		}
-
-		state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
-			return &internalProxyState{
-				history: queue.New[C.DelayHistory](defaultHistoriesNum),
-				alive:   atomic.NewBool(true),
-			}
-		})
-
-		if !satisfied {
-			record.Delay = 0
-			alive = false
-		}
-
-		state.alive.Store(alive)
-		state.history.Put(record)
-		if state.history.Len() > defaultHistoriesNum {
-			state.history.Pop()
-		}
-
+		p.recordURLTestResult(url, t, satisfied, err)
 	}()
 
 	unifiedDelay := UnifiedDelay.Load()
@@ -276,6 +247,38 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
 	t = uint16(time.Since(start) / time.Millisecond)
 	return
+}
+
+func (p *Proxy) recordURLTestResult(url string, delay uint16, satisfied bool, err error) {
+	alive := err == nil
+	record := C.DelayHistory{Time: time.Now()}
+	if alive {
+		record.Delay = delay
+	}
+
+	p.alive.Store(alive)
+	p.history.Put(record)
+	if p.history.Len() > defaultHistoriesNum {
+		p.history.Pop()
+	}
+
+	state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
+		return &internalProxyState{
+			history: queue.New[C.DelayHistory](defaultHistoriesNum),
+			alive:   atomic.NewBool(true),
+		}
+	})
+
+	if !satisfied {
+		record.Delay = 0
+		alive = false
+	}
+
+	state.alive.Store(alive)
+	state.history.Put(record)
+	if state.history.Len() > defaultHistoriesNum {
+		state.history.Pop()
+	}
 }
 
 func NewProxy(adapter C.ProxyAdapter) *Proxy {

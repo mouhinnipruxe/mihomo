@@ -1767,6 +1767,7 @@ proxy-groups:
     # tolerance: 150
     # lazy: true
     # expected-status: 204 # 当健康检查返回状态码与期望值不符时，认为节点不可用
+    # test-type: docker-registry # 使用两条独立连接依次请求 Registry manifest 和 token；同样适用于 fallback、load-balance、select
     url: "https://cp.cloudflare.com/generate_204"
     interval: 300
 

@@ -88,6 +88,7 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		"now":            f.Now(),
 		"all":            all,
 		"testUrl":        f.testUrl,
+		"testType":       f.testType.String(),
 		"expectedStatus": f.expectedStatus,
 		"fixed":          f.selected,
 		"hidden":         f.Hidden(),
@@ -141,7 +142,7 @@ func (f *Fallback) Set(name string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
 		defer cancel()
 		expectedStatus, _ := utils.NewUnsignedRanges[uint16](f.expectedStatus)
-		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus)
+		_, _ = f.urlTestProxy(ctx, p, f.testUrl, expectedStatus)
 	}
 
 	return nil
@@ -173,6 +174,7 @@ func NewFallback(option GroupCommonOption, fallbackOption FallbackOption, emptyF
 			MaxFailedTimes: option.MaxFailedTimes,
 			EmptyFallback:  emptyFallback,
 			Providers:      providers,
+			TestType:       option.urlTestType(),
 		}),
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,

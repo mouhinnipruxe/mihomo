@@ -34,6 +34,7 @@ type GroupBase struct {
 	testTimeout       int
 	maxFailedTimes    int
 	emptyFallback     C.Proxy
+	testType          C.URLTestType
 
 	// for GetProxies
 	getProxiesMutex  sync.Mutex
@@ -53,6 +54,7 @@ type GroupBaseOption struct {
 	MaxFailedTimes int
 	EmptyFallback  C.Proxy
 	Providers      []P.ProxyProvider
+	TestType       C.URLTestType
 }
 
 func NewGroupBase(opt GroupBaseOption) *GroupBase {
@@ -89,6 +91,7 @@ func NewGroupBase(opt GroupBaseOption) *GroupBase {
 		testTimeout:       opt.TestTimeout,
 		maxFailedTimes:    opt.MaxFailedTimes,
 		emptyFallback:     opt.EmptyFallback,
+		testType:          opt.TestType,
 	}
 
 	if gb.testTimeout == 0 {
@@ -235,6 +238,7 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 }
 
 func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (map[string]uint16, error) {
+	url = C.URLTestURL(gb.testType, url)
 	var wg sync.WaitGroup
 	var lock sync.Mutex
 	mp := map[string]uint16{}
@@ -243,7 +247,7 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 		proxy := proxy
 		wg.Add(1)
 		go func() {
-			delay, err := proxy.URLTest(ctx, url, expectedStatus)
+			delay, err := gb.urlTestProxy(ctx, proxy, url, expectedStatus)
 			if err == nil {
 				lock.Lock()
 				mp[proxy.Name()] = delay
@@ -260,6 +264,10 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 	} else {
 		return mp, nil
 	}
+}
+
+func (gb *GroupBase) urlTestProxy(ctx context.Context, proxy C.Proxy, url string, expectedStatus utils.IntRanges[uint16]) (uint16, error) {
+	return C.URLTestWithOptions(proxy, ctx, url, C.URLTestOptions{Type: gb.testType, ExpectedStatus: expectedStatus})
 }
 
 func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func()) {

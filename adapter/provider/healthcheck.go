@@ -24,6 +24,7 @@ type HealthCheckOption struct {
 type extraOption struct {
 	expectedStatus utils.IntRanges[uint16]
 	filters        map[string]struct{}
+	testType       C.URLTestType
 }
 
 type HealthCheck struct {
@@ -36,6 +37,7 @@ type HealthCheck struct {
 	interval       time.Duration
 	lazy           bool
 	expectedStatus utils.IntRanges[uint16]
+	testType       C.URLTestType
 	lastTouch      atomic.TypedValue[time.Time]
 	singleDo       *singledo.Single[struct{}]
 	timeout        time.Duration
@@ -66,14 +68,23 @@ func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
 }
 
 func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
+	hc.registerHealthCheckTaskWithOptions(url, expectedStatus, filter, interval, C.URLTestTypeDefault)
+}
+
+func (hc *HealthCheck) registerHealthCheckTaskWithOptions(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint, testType C.URLTestType) {
+	url = C.URLTestURL(testType, url)
 	url = strings.TrimSpace(url)
-	if len(url) == 0 || url == hc.url {
+	if len(url) == 0 {
 		log.Debugln("ignore invalid health check url: %s", url)
 		return
 	}
 
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
+	if url == hc.url {
+		hc.testType = strongerURLTestType(hc.testType, testType)
+		return
+	}
 
 	// if the provider has not set up health checks, then modify it to be the same as the group's interval
 	if hc.interval == 0 {
@@ -86,6 +97,7 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 
 	// prioritize the use of previously registered configurations, especially those from provider
 	if _, ok := hc.extra[url]; ok {
+		hc.extra[url].testType = strongerURLTestType(hc.extra[url].testType, testType)
 		// provider default health check does not set filter
 		if url != hc.url && len(filter) != 0 {
 			splitAndAddFiltersToExtra(filter, hc.extra[url])
@@ -95,9 +107,16 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 		return
 	}
 
-	option := &extraOption{filters: map[string]struct{}{}, expectedStatus: expectedStatus}
+	option := &extraOption{filters: map[string]struct{}{}, expectedStatus: expectedStatus, testType: testType}
 	splitAndAddFiltersToExtra(filter, option)
 	hc.extra[url] = option
+}
+
+func strongerURLTestType(current, candidate C.URLTestType) C.URLTestType {
+	if candidate != C.URLTestTypeDefault {
+		return candidate
+	}
+	return current
 }
 
 func splitAndAddFiltersToExtra(filter string, option *extraOption) {
@@ -132,7 +151,7 @@ func (hc *HealthCheck) check() {
 		b.SetLimit(10)
 
 		// execute default health check
-		option := &extraOption{filters: nil, expectedStatus: hc.expectedStatus}
+		option := &extraOption{filters: nil, expectedStatus: hc.expectedStatus, testType: hc.testType}
 		hc.execute(b, hc.url, id, option)
 
 		// execute extra health check
@@ -156,8 +175,10 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 
 	var filterReg *regexp2.Regexp
 	var expectedStatus utils.IntRanges[uint16]
+	var testType C.URLTestType
 	if option != nil {
 		expectedStatus = option.expectedStatus
+		testType = option.testType
 		if len(option.filters) != 0 {
 			filters := make([]string, 0, len(option.filters))
 			for filter := range option.filters {
@@ -181,7 +202,7 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 			ctx, cancel := context.WithTimeout(hc.ctx, hc.timeout)
 			defer cancel()
 			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
-			_, _ = p.URLTest(ctx, url, expectedStatus)
+			_, _ = C.URLTestWithOptions(p, ctx, url, C.URLTestOptions{Type: testType, ExpectedStatus: expectedStatus})
 			log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
 			return nil
 		})
@@ -193,6 +214,11 @@ func (hc *HealthCheck) close() {
 }
 
 func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16]) *HealthCheck {
+	return NewHealthCheckWithTestType(proxies, url, timeout, interval, lazy, expectedStatus, C.URLTestTypeDefault)
+}
+
+func NewHealthCheckWithTestType(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16], testType C.URLTestType) *HealthCheck {
+	url = C.URLTestURL(testType, url)
 	if url == "" {
 		expectedStatus = nil
 		interval = 0
@@ -212,6 +238,7 @@ func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, 
 		interval:       time.Duration(interval) * time.Second,
 		lazy:           lazy,
 		expectedStatus: expectedStatus,
+		testType:       testType,
 		singleDo:       singledo.NewSingle[struct{}](time.Second),
 	}
 }

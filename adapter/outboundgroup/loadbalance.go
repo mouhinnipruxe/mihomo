@@ -193,60 +193,64 @@ func strategyRoundRobin(target C.URLTestTarget) strategyFn {
 	}
 }
 
+// Try hashed candidates first, then check every member before falling back.
+func healthyHashIndex(proxies []C.Proxy, target C.URLTestTarget, key uint64) (int, bool) {
+	for i := 0; i < 5; i++ {
+		idx := int(jumpHash(key+uint64(i), int32(len(proxies))))
+		if target.Alive(proxies[idx]) {
+			return idx, true
+		}
+	}
+	for i, p := range proxies {
+		if target.Alive(p) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func strategyConsistentHashing(target C.URLTestTarget, keyOf keyFn) strategyFn {
-	maxRetry := 5
 	return func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy {
-		key := utils.MapHash(keyOf(metadata))
-		buckets := int32(len(proxies))
-		for i := 0; i < maxRetry; i, key = i+1, key+1 {
-			idx := jumpHash(key, buckets)
-			proxy := proxies[idx]
-			if target.Alive(proxy) {
-				return proxy
-			}
-		}
-
-		// when availability is poor, traverse the entire list to get the available nodes
-		for _, proxy := range proxies {
-			if target.Alive(proxy) {
-				return proxy
-			}
-		}
-
-		return proxies[0]
+		idx, _ := healthyHashIndex(proxies, target, utils.MapHash(keyOf(metadata)))
+		return proxies[idx]
 	}
 }
 
 func strategyStickySessions(target C.URLTestTarget, keyOf keyFn) strategyFn {
-	ttl := time.Minute * 10
-	maxRetry := 5
-	lruCache := lru.New[uint64, int](
-		lru.WithAge[uint64, int](int64(ttl.Seconds())),
-		lru.WithSize[uint64, int](1000))
+	type member struct {
+		index int
+		name  string
+	}
+	cache := lru.New[uint64, member](
+		lru.WithAge[uint64, member](int64((10 * time.Minute).Seconds())),
+		lru.WithSize[uint64, member](1000))
 	return func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy {
 		key := utils.MapHash(keyOf(metadata))
-		length := len(proxies)
-		idx, has := lruCache.Get(key)
-		if !has || idx >= length {
-			idx = int(jumpHash(key+uint64(time.Now().UnixNano()), int32(length)))
-		}
-
-		nowIdx := idx
-		for i := 1; i < maxRetry; i++ {
-			proxy := proxies[nowIdx]
-			if target.Alive(proxy) {
-				if !has || nowIdx != idx {
-					lruCache.Set(key, nowIdx)
-				}
-
-				return proxy
-			} else {
-				nowIdx = int(jumpHash(key+uint64(time.Now().UnixNano()), int32(length)))
+		if pinned, ok := cache.Get(key); ok && pinned.index < len(proxies) {
+			if p := proxies[pinned.index]; p.Name() == pinned.name && target.Alive(p) {
+				return p
 			}
 		}
 
-		lruCache.Set(key, 0)
-		return proxies[0]
+		// Recheck under the cache lock: another request may already have bound this session.
+		pinned, ok := cache.Compute(key, func(old member, loaded bool) (member, bool) {
+			if loaded {
+				for i, p := range proxies {
+					if p.Name() == old.name && target.Alive(p) {
+						return member{index: i, name: old.name}, false
+					}
+				}
+			}
+			idx, alive := healthyHashIndex(proxies, target, key+uint64(time.Now().UnixNano()))
+			if !alive {
+				return member{}, true
+			}
+			return member{index: idx, name: proxies[idx].Name()}, false
+		})
+		if !ok {
+			return proxies[0]
+		}
+		return proxies[pinned.index]
 	}
 }
 

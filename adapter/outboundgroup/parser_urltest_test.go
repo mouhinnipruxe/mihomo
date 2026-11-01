@@ -365,3 +365,98 @@ func TestRegistryGroupWithoutURLUsesManifest(t *testing.T) {
 		t.Fatalf("default Registry check cannot obtain a manifest challenge from %q", url)
 	}
 }
+
+func TestFallbackRegistrySelectionOrder(t *testing.T) {
+	testutil.WithDockerCLI(t)
+	var fail, gate atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if r.Method == http.MethodHead {
+			if gate.CompareAndSwap(true, false) {
+				close(entered)
+				<-release
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="http://`+r.Host+`/token"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, `{"token":"ok"}`)
+	}))
+	defer server.Close()
+	ps := newProxyMap()
+	names := []string{"first", "second", "pinned", "last"}
+	for _, name := range names {
+		ps[name] = A.NewProxy(outbound.NewDirectWithOption(outbound.DirectOption{Name: name}))
+	}
+	g, err := G.ParseProxyGroup(map[string]any{"name": "group", "type": "fallback", "proxies": names, "url": server.URL, "test-type": "docker-registry"}, ps, map[string]P.ProxyProvider{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := g.(*G.Fallback)
+	probe := func(name string, ok bool) {
+		t.Helper()
+		_, err := C.URLTestWithOptions(ps[name], context.Background(), server.URL, C.URLTestOptions{Type: C.URLTestTypeDockerRegistry})
+		if (err == nil) != ok {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for _, name := range names {
+		probe(name, true)
+	}
+	if err := group.Set("pinned"); err != nil {
+		t.Fatal(err)
+	}
+	if got := group.Now(); got != "pinned" {
+		t.Fatalf("healthy manual selection: got %s", got)
+	}
+	fail.Store(true)
+	probe("first", false)
+	probe("pinned", false)
+	if got := group.Now(); got != "second" {
+		t.Errorf("failed manual selection: got %s, want second", got)
+	}
+	fail.Store(false)
+	gate.Store(true)
+	setDone := make(chan error, 1)
+	go func() { setDone <- group.Set("pinned") }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("selected node was not retested")
+	}
+	during := group.Now()
+	close(release)
+	if err := <-setDone; err != nil {
+		t.Fatal(err)
+	}
+	if after := group.Now(); during != "second" || after != "pinned" {
+		t.Errorf("during retest: %s, after success: %s", during, after)
+	}
+	fail.Store(true)
+	group.ForceSet("missing")
+	if got := group.Now(); got != "second" {
+		t.Errorf("absent manual selection: got %s, want second", got)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			group.ForceSet("second")
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		group.Now()
+	}
+	<-done
+	probe("second", false)
+	probe("pinned", false)
+	probe("last", false)
+	if got := group.Now(); got != "first" {
+		t.Errorf("all nodes down: got %s, want first", got)
+	}
+}

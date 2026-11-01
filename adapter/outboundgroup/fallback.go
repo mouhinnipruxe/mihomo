@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/callback"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
@@ -19,7 +20,7 @@ type Fallback struct {
 	*GroupBase
 	disableUDP     bool
 	testUrl        string
-	selected       string
+	selected       atomic.TypedValue[string]
 	expectedStatus string
 }
 
@@ -90,7 +91,7 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		"testUrl":        f.testUrl,
 		"testType":       f.testType.String(),
 		"expectedStatus": f.expectedStatus,
-		"fixed":          f.selected,
+		"fixed":          f.selected.Load(),
 		"hidden":         f.Hidden(),
 		"icon":           f.Icon(),
 		"emptyFallback":  f.EmptyFallback().Name(),
@@ -106,19 +107,21 @@ func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
 	proxies := f.GetProxies(touch)
 	target := C.URLTestTarget{URL: f.testUrl, Type: f.testType}
-	for _, proxy := range proxies {
-		if len(f.selected) == 0 {
+	if selected := f.selected.Load(); selected != "" {
+		for _, proxy := range proxies {
+			if proxy.Name() != selected {
+				continue
+			}
 			if target.Alive(proxy) {
 				return proxy
 			}
-		} else {
-			if proxy.Name() == f.selected {
-				if target.Alive(proxy) {
-					return proxy
-				} else {
-					f.selected = ""
-				}
-			}
+			f.selected.CompareAndSwap(selected, "")
+			break
+		}
+	}
+	for _, proxy := range proxies {
+		if target.Alive(proxy) {
+			return proxy
 		}
 	}
 
@@ -138,7 +141,6 @@ func (f *Fallback) Set(name string) error {
 		return errors.New("proxy not exist")
 	}
 
-	f.selected = name
 	target := C.URLTestTarget{URL: f.testUrl, Type: f.testType}
 	if !target.Alive(p) || (target.Type != C.URLTestTypeDefault && target.Delay(p) == 0xffff) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
@@ -147,11 +149,12 @@ func (f *Fallback) Set(name string) error {
 		_, _ = f.urlTestProxy(ctx, p, f.testUrl, expectedStatus)
 	}
 
+	f.selected.Store(name)
 	return nil
 }
 
 func (f *Fallback) ForceSet(name string) {
-	f.selected = name
+	f.selected.Store(name)
 }
 
 func (f *Fallback) Providers() []P.ProxyProvider {

@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
-	"github.com/metacubex/mihomo/common/singledo"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/dlclark/regexp2"
+	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -38,12 +38,14 @@ type HealthCheck struct {
 	expectedStatus utils.IntRanges[uint16]
 	testType       C.URLTestType
 	lastTouch      atomic.TypedValue[time.Time]
-	singleDo       *singledo.Single[struct{}]
+	checkMu        sync.Mutex
+	lastCompleted  time.Time
+	dirty          bool
 	timeout        time.Duration
 }
 
 func (hc *HealthCheck) process() {
-	ticker := time.NewTicker(hc.interval)
+	ticker := time.NewTicker(hc.checkInterval())
 	go hc.check()
 	for {
 		select {
@@ -63,7 +65,10 @@ func (hc *HealthCheck) process() {
 }
 
 func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
 	hc.proxies = proxies
+	hc.dirty = true
 }
 
 func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
@@ -96,7 +101,9 @@ func (hc *HealthCheck) registerHealthCheckTaskWithOptions(url string, expectedSt
 
 	// prioritize the use of previously registered configurations, especially those from provider
 	if existing, ok := hc.extra[target]; ok {
-		existing.includeFilter(filter)
+		if existing.includeFilter(filter) {
+			hc.dirty = true
+		}
 
 		log.Debugln("health check url: %s exists", url)
 		return
@@ -105,13 +112,15 @@ func (hc *HealthCheck) registerHealthCheckTaskWithOptions(url string, expectedSt
 	option := &extraOption{filters: map[string]struct{}{}, expectedStatus: expectedStatus}
 	option.includeFilter(filter)
 	hc.extra[target] = option
+	hc.dirty = true
 }
 
 // A nil set includes every node; adding more groups cannot narrow it.
-func (o *extraOption) includeFilter(filter string) {
+func (o *extraOption) includeFilter(filter string) bool {
 	if o.filters == nil {
-		return
+		return false
 	}
+	before := len(o.filters)
 	anyPattern := false
 	for _, part := range strings.Split(filter, "`") {
 		if pattern := strings.TrimSpace(part); pattern != "" {
@@ -121,11 +130,15 @@ func (o *extraOption) includeFilter(filter string) {
 	}
 	if !anyPattern {
 		o.filters = nil
+		return true
 	}
+	return len(o.filters) != before
 }
 
-func (hc *HealthCheck) auto() bool {
-	return hc.interval != 0
+func (hc *HealthCheck) checkInterval() time.Duration {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	return hc.interval
 }
 
 func (hc *HealthCheck) touch() {
@@ -133,27 +146,37 @@ func (hc *HealthCheck) touch() {
 }
 
 func (hc *HealthCheck) check() {
-	if len(hc.proxies) == 0 {
+	// Serialize probe batches without blocking a provider from publishing new members.
+	hc.checkMu.Lock()
+	defer hc.checkMu.Unlock()
+
+	hc.mu.Lock()
+	if len(hc.proxies) == 0 || hc.ctx.Err() != nil || (!hc.dirty && time.Since(hc.lastCompleted) < time.Second) {
+		hc.mu.Unlock()
 		return
 	}
+	proxies := hc.proxies
+	extra := make(map[C.URLTestTarget]extraOption, len(hc.extra))
+	for target, option := range hc.extra {
+		extra[target] = extraOption{expectedStatus: option.expectedStatus, filters: maps.Clone(option.filters)}
+	}
+	hc.dirty = false
+	hc.mu.Unlock()
 
-	_, _, _ = hc.singleDo.Do(func() (struct{}, error) {
-		id := utils.NewUUIDV4().String()
-		log.Debugln("Start New Health Checking {%s}", id)
-		b := new(errgroup.Group)
-		b.SetLimit(10)
-
-		hc.execute(b, C.URLTestTarget{URL: hc.url, Type: hc.testType}, id, &extraOption{expectedStatus: hc.expectedStatus})
-		for target, option := range hc.extra {
-			hc.execute(b, target, id, option)
-		}
-		_ = b.Wait()
-		log.Debugln("Finish A Health Checking {%s}", id)
-		return struct{}{}, nil
-	})
+	id := utils.NewUUIDV4().String()
+	log.Debugln("Start New Health Checking {%s}", id)
+	b := new(errgroup.Group)
+	b.SetLimit(10)
+	hc.execute(b, proxies, C.URLTestTarget{URL: hc.url, Type: hc.testType}, id, extraOption{expectedStatus: hc.expectedStatus})
+	for target, option := range extra {
+		hc.execute(b, proxies, target, id, option)
+	}
+	_ = b.Wait()
+	hc.lastCompleted = time.Now()
+	log.Debugln("Finish A Health Checking {%s}", id)
 }
 
-func (hc *HealthCheck) execute(b *errgroup.Group, target C.URLTestTarget, uid string, option *extraOption) {
+func (hc *HealthCheck) execute(b *errgroup.Group, proxies []C.Proxy, target C.URLTestTarget, uid string, option extraOption) {
 	target.URL = strings.TrimSpace(target.URL)
 	if target.URL == "" {
 		log.Debugln("Health Check has been skipped due to testUrl is empty, {%s}", uid)
@@ -169,7 +192,7 @@ func (hc *HealthCheck) execute(b *errgroup.Group, target C.URLTestTarget, uid st
 		filterReg = regexp2.MustCompile(strings.Join(filters, "|"), regexp2.None)
 	}
 
-	for _, proxy := range hc.proxies {
+	for _, proxy := range proxies {
 		// skip proxies that do not require health check
 		if filterReg != nil {
 			if match, _ := filterReg.MatchString(proxy.Name()); !match {
@@ -219,6 +242,5 @@ func NewHealthCheckWithTestType(proxies []C.Proxy, url string, timeout uint, int
 		lazy:           lazy,
 		expectedStatus: expectedStatus,
 		testType:       testType,
-		singleDo:       singledo.NewSingle[struct{}](time.Second),
 	}
 }

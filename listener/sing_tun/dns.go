@@ -18,9 +18,9 @@ import (
 	"github.com/metacubex/sing/common/network"
 )
 
-func (h *ListenerHandler) ShouldHijackDns(targetAddr netip.AddrPort) bool {
-	for _, addrPort := range h.DnsAddrPorts {
-		if addrPort == targetAddr || (addrPort.Addr().IsUnspecified() && targetAddr.Port() == 53) {
+func (h *ListenerHandler) ShouldHijackDns(network string, targetAddr netip.AddrPort) bool {
+	for _, rule := range h.DNSHijack {
+		if rule.Network == network && rule.Address.Port() == targetAddr.Port() && (rule.Address == targetAddr || rule.Address.Addr().IsUnspecified()) {
 			return true
 		}
 	}
@@ -28,7 +28,7 @@ func (h *ListenerHandler) ShouldHijackDns(targetAddr netip.AddrPort) bool {
 }
 
 func (h *ListenerHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
-	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
+	if h.ShouldHijackDns("tcp", metadata.Destination.AddrPort()) {
 		log.Debugln("[DNS] hijack tcp:%s", metadata.Destination.String())
 		return resolver.RelayDnsConn(ctx, conn, resolver.DefaultDnsReadTimeout)
 	}
@@ -36,7 +36,7 @@ func (h *ListenerHandler) NewConnection(ctx context.Context, conn net.Conn, meta
 }
 
 func (h *ListenerHandler) NewPacket(ctx context.Context, key netip.AddrPort, buffer *buf.Buffer, metadata M.Metadata, init func(natConn network.PacketConn) network.PacketWriter) {
-	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
+	if h.ShouldHijackDns("udp", metadata.Destination.AddrPort()) {
 		log.Debugln("[DNS] hijack udp:%s from %s", metadata.Destination.String(), metadata.Source.String())
 		writer := init(nil)
 		rwOptions := network.ReadWaitOptions{
@@ -51,7 +51,7 @@ func (h *ListenerHandler) NewPacket(ctx context.Context, key netip.AddrPort, buf
 }
 
 func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.PacketConn, metadata M.Metadata) error {
-	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
+	if h.ShouldHijackDns("udp", metadata.Destination.AddrPort()) {
 		log.Debugln("[DNS] hijack udp:%s from %s", metadata.Destination.String(), metadata.Source.String())
 		defer func() { _ = conn.Close() }()
 		mutex := sync.Mutex{}

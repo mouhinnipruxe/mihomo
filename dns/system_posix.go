@@ -13,9 +13,13 @@ import (
 const resolvConf = "/etc/resolv.conf"
 
 func dnsReadConfig() (servers []string, err error) {
-	file, err := os.Open(resolvConf)
+	return dnsReadConfigFile(resolvConf)
+}
+
+func dnsReadConfigFile(path string) (servers []string, err error) {
+	file, err := os.Open(path)
 	if err != nil {
-		err = fmt.Errorf("failed to read %s: %w", resolvConf, err)
+		err = fmt.Errorf("failed to read %s: %w", path, err)
 		return
 	}
 	defer func() { _ = file.Close() }()
@@ -39,5 +43,5 @@ func dnsReadConfig() (servers []string, err error) {
 			}
 		}
 	}
-	return
+	return servers, scanner.Err()
 }

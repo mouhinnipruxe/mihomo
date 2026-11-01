@@ -69,7 +69,7 @@ type Listener struct {
 
 type ListenerHandler struct {
 	*sing.ListenerHandler
-	DnsAddrPorts          []netip.AddrPort
+	DNSHijack             []tun.DNSHijackRule
 	Inet4Address          []netip.Prefix
 	Inet6Address          []netip.Prefix
 	DisableICMPForwarding bool
@@ -280,31 +280,21 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		return nil, fmt.Errorf("invalid dns-mode: %s", options.DNSMode)
 	}
 
-	var dnsAdds []netip.AddrPort
-
-	for _, d := range options.DNSHijack {
-		if _, after, ok := strings.Cut(d, "://"); ok {
-			d = after
-		}
-		d = strings.Replace(d, "any", "0.0.0.0", 1)
-		addrPort, err := netip.ParseAddrPort(d)
-		if err != nil {
-			return nil, fmt.Errorf("parse dns-hijack url error: %w", err)
-		}
-
-		dnsAdds = append(dnsAdds, addrPort)
+	dnsAdds, err := parseDNSHijack(options.DNSHijack)
+	if err != nil {
+		return nil, err
 	}
-
+	configuredDNSHijack := dnsAdds
 	var dnsServerIp []string
 	for _, a := range options.Inet4Address {
 		addrPort := netip.AddrPortFrom(a.Addr().Next(), 53)
 		dnsServerIp = append(dnsServerIp, a.Addr().Next().String())
-		dnsAdds = append(dnsAdds, addrPort)
+		dnsAdds = append(dnsAdds, tun.DNSHijackRule{Network: "udp", Address: addrPort}, tun.DNSHijackRule{Network: "tcp", Address: addrPort})
 	}
 	for _, a := range options.Inet6Address {
 		addrPort := netip.AddrPortFrom(a.Addr().Next(), 53)
 		dnsServerIp = append(dnsServerIp, a.Addr().Next().String())
-		dnsAdds = append(dnsAdds, addrPort)
+		dnsAdds = append(dnsAdds, tun.DNSHijackRule{Network: "udp", Address: addrPort}, tun.DNSHijackRule{Network: "tcp", Address: addrPort})
 	}
 
 	h, err := sing.NewListenerHandler(sing.ListenerConfig{
@@ -318,7 +308,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 
 	handler := &ListenerHandler{
 		ListenerHandler:       h,
-		DnsAddrPorts:          dnsAdds,
+		DNSHijack:             dnsAdds,
 		Inet4Address:          options.Inet4Address,
 		Inet6Address:          options.Inet6Address,
 		DisableICMPForwarding: options.DisableICMPForwarding,
@@ -398,6 +388,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		Inet6Address:                          options.Inet6Address,
 		DNSMode:                               options.DNSMode,
 		AutoRoute:                             options.AutoRoute,
+		DNSHijack:                             configuredDNSHijack,
 		IPRoute2TableIndex:                    tableIndex,
 		IPRoute2RuleIndex:                     ruleIndex,
 		IPRoute2AutoRedirectFallbackRuleIndex: autoRedirectFallbackRuleIndex,

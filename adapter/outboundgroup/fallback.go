@@ -88,6 +88,7 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		"now":            f.Now(),
 		"all":            all,
 		"testUrl":        f.testUrl,
+		"testType":       f.testType.String(),
 		"expectedStatus": f.expectedStatus,
 		"fixed":          f.selected,
 		"hidden":         f.Hidden(),
@@ -104,14 +105,15 @@ func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
 	proxies := f.GetProxies(touch)
+	target := C.URLTestTarget{URL: f.testUrl, Type: f.testType}
 	for _, proxy := range proxies {
 		if len(f.selected) == 0 {
-			if proxy.AliveForTestUrl(f.testUrl) {
+			if target.Alive(proxy) {
 				return proxy
 			}
 		} else {
 			if proxy.Name() == f.selected {
-				if proxy.AliveForTestUrl(f.testUrl) {
+				if target.Alive(proxy) {
 					return proxy
 				} else {
 					f.selected = ""
@@ -137,11 +139,12 @@ func (f *Fallback) Set(name string) error {
 	}
 
 	f.selected = name
-	if !p.AliveForTestUrl(f.testUrl) {
+	target := C.URLTestTarget{URL: f.testUrl, Type: f.testType}
+	if !target.Alive(p) || (target.Type != C.URLTestTypeDefault && target.Delay(p) == 0xffff) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
 		defer cancel()
 		expectedStatus, _ := utils.NewUnsignedRanges[uint16](f.expectedStatus)
-		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus)
+		_, _ = f.urlTestProxy(ctx, p, f.testUrl, expectedStatus)
 	}
 
 	return nil
@@ -173,6 +176,7 @@ func NewFallback(option GroupCommonOption, fallbackOption FallbackOption, emptyF
 			MaxFailedTimes: option.MaxFailedTimes,
 			EmptyFallback:  emptyFallback,
 			Providers:      providers,
+			TestType:       option.urlTestType(),
 		}),
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,

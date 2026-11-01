@@ -35,7 +35,7 @@ type Proxy struct {
 	C.ProxyAdapter
 	alive   atomic.Bool
 	history *queue.Queue[C.DelayHistory]
-	extra   xsync.Map[string, *internalProxyState]
+	extra   xsync.Map[C.URLTestTarget, *internalProxyState]
 }
 
 // Adapter implements C.Proxy
@@ -45,11 +45,7 @@ func (p *Proxy) Adapter() C.ProxyAdapter {
 
 // AliveForTestUrl implements C.Proxy
 func (p *Proxy) AliveForTestUrl(url string) bool {
-	if state, ok := p.extra.Load(url); ok {
-		return state.alive.Load()
-	}
-
-	return p.alive.Load()
+	return p.AliveForTestTarget(p.displayTarget(url))
 }
 
 // DialContext implements C.ProxyAdapter
@@ -78,7 +74,7 @@ func (p *Proxy) DelayHistory() []C.DelayHistory {
 func (p *Proxy) DelayHistoryForTestUrl(url string) []C.DelayHistory {
 	var queueM []C.DelayHistory
 
-	if state, ok := p.extra.Load(url); ok {
+	if state, ok := p.extra.Load(p.displayTarget(url)); ok {
 		queueM = state.history.Copy()
 	}
 	histories := []C.DelayHistory{}
@@ -93,8 +89,11 @@ func (p *Proxy) DelayHistoryForTestUrl(url string) []C.DelayHistory {
 func (p *Proxy) ExtraDelayHistories() map[string]C.ProxyState {
 	histories := map[string]C.ProxyState{}
 
-	p.extra.Range(func(k string, v *internalProxyState) bool {
-		testUrl := k
+	p.extra.Range(func(k C.URLTestTarget, v *internalProxyState) bool {
+		if k != p.displayTarget(k.URL) {
+			return true
+		}
+		testUrl := k.URL
 		state := v
 
 		queueM := state.history.Copy()
@@ -116,20 +115,35 @@ func (p *Proxy) ExtraDelayHistories() map[string]C.ProxyState {
 // LastDelayForTestUrl return last history record of the specified URL. if proxy is not alive, return the max value of uint16.
 // implements C.Proxy
 func (p *Proxy) LastDelayForTestUrl(url string) (delay uint16) {
-	var maxDelay uint16 = 0xffff
+	return p.LastDelayForTestTarget(p.displayTarget(url))
+}
 
-	alive := false
-	var history C.DelayHistory
-
-	if state, ok := p.extra.Load(url); ok {
-		alive = state.alive.Load()
-		history = state.history.Last()
+// The URL-only API keeps displaying the dedicated probe when one is configured.
+func (p *Proxy) displayTarget(url string) C.URLTestTarget {
+	target := C.URLTestTarget{URL: url, Type: C.URLTestTypeDockerRegistry}
+	if _, ok := p.extra.Load(target); ok {
+		return target
 	}
+	return C.URLTestTarget{URL: url}
+}
 
-	if !alive || history.Delay == 0 {
-		return maxDelay
+func (p *Proxy) AliveForTestTarget(target C.URLTestTarget) bool {
+	if state, ok := p.extra.Load(target); ok {
+		return state.alive.Load()
 	}
-	return history.Delay
+	if target.Type != C.URLTestTypeDefault {
+		return true
+	}
+	return p.alive.Load()
+}
+
+func (p *Proxy) LastDelayForTestTarget(target C.URLTestTarget) uint16 {
+	if state, ok := p.extra.Load(target); ok && state.alive.Load() {
+		if delay := state.history.Last().Delay; delay != 0 {
+			return delay
+		}
+	}
+	return 0xffff
 }
 
 // MarshalJSON implements C.ProxyAdapter
@@ -163,40 +177,16 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 
 // URLTest get the delay for the specified URL
 // implements C.Proxy
-func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (uint16, error) {
+	return p.urlTest(ctx, C.URLTestTarget{URL: url}, expectedStatus)
+}
+
+func (p *Proxy) urlTest(ctx context.Context, target C.URLTestTarget, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+	url := target.URL
 	var satisfied bool
 
 	defer func() {
-		alive := err == nil
-		record := C.DelayHistory{Time: time.Now()}
-		if alive {
-			record.Delay = t
-		}
-
-		p.alive.Store(alive)
-		p.history.Put(record)
-		if p.history.Len() > defaultHistoriesNum {
-			p.history.Pop()
-		}
-
-		state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
-			return &internalProxyState{
-				history: queue.New[C.DelayHistory](defaultHistoriesNum),
-				alive:   atomic.NewBool(true),
-			}
-		})
-
-		if !satisfied {
-			record.Delay = 0
-			alive = false
-		}
-
-		state.alive.Store(alive)
-		state.history.Put(record)
-		if state.history.Len() > defaultHistoriesNum {
-			state.history.Pop()
-		}
-
+		p.recordURLTestResult(target, t, satisfied, err)
 	}()
 
 	unifiedDelay := UnifiedDelay.Load()
@@ -274,13 +264,40 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	}
 
 	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
-	t = uint16(time.Since(start) / time.Millisecond)
-	if t == 0 {
-		// a zero delay means a failed test to callers, so report a test
-		// that completed in under a millisecond as 1 ms
-		t = 1
-	}
+	t = successfulDelay(time.Since(start))
 	return
+}
+
+func (p *Proxy) recordURLTestResult(target C.URLTestTarget, delay uint16, satisfied bool, err error) {
+	alive := err == nil
+	record := C.DelayHistory{Time: time.Now()}
+	if alive {
+		record.Delay = delay
+	}
+
+	p.alive.Store(alive)
+	p.history.Put(record)
+	if p.history.Len() > defaultHistoriesNum {
+		p.history.Pop()
+	}
+
+	state, _ := p.extra.LoadOrStoreFn(target, func() *internalProxyState {
+		return &internalProxyState{
+			history: queue.New[C.DelayHistory](defaultHistoriesNum),
+			alive:   atomic.NewBool(true),
+		}
+	})
+
+	if !satisfied {
+		record.Delay = 0
+		alive = false
+	}
+
+	state.alive.Store(alive)
+	state.history.Put(record)
+	if state.history.Len() > defaultHistoriesNum {
+		state.history.Pop()
+	}
 }
 
 func NewProxy(adapter C.ProxyAdapter) *Proxy {

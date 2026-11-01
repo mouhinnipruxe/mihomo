@@ -86,6 +86,11 @@ type ProxyProvider interface {
 	HealthCheckURL() string
 }
 
+type ProxyProviderWithHealthCheckOptions interface {
+	ProxyProvider
+	RegisterHealthCheckTaskWithOptions(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint, testType constant.URLTestType)
+}
+
 // RuleProvider interface
 type RuleProvider interface {
 	Provider

@@ -30,12 +30,13 @@ type HealthCheck struct {
 	ctx            context.Context
 	ctxCancel      context.CancelFunc
 	url            string
-	extra          map[string]*extraOption
+	extra          map[C.URLTestTarget]*extraOption
 	mu             sync.Mutex
 	proxies        []C.Proxy
 	interval       time.Duration
 	lazy           bool
 	expectedStatus utils.IntRanges[uint16]
+	testType       C.URLTestType
 	lastTouch      atomic.TypedValue[time.Time]
 	singleDo       *singledo.Single[struct{}]
 	timeout        time.Duration
@@ -66,14 +67,22 @@ func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
 }
 
 func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
+	hc.registerHealthCheckTaskWithOptions(url, expectedStatus, filter, interval, C.URLTestTypeDefault)
+}
+
+func (hc *HealthCheck) registerHealthCheckTaskWithOptions(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint, testType C.URLTestType) {
 	url = strings.TrimSpace(url)
-	if len(url) == 0 || url == hc.url {
+	if len(url) == 0 {
 		log.Debugln("ignore invalid health check url: %s", url)
 		return
 	}
 
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
+	target := C.URLTestTarget{URL: url, Type: testType}
+	if url == hc.url && testType == hc.testType {
+		return
+	}
 
 	// if the provider has not set up health checks, then modify it to be the same as the group's interval
 	if hc.interval == 0 {
@@ -81,34 +90,36 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 	}
 
 	if hc.extra == nil {
-		hc.extra = make(map[string]*extraOption)
+		hc.extra = make(map[C.URLTestTarget]*extraOption)
 	}
 
 	// prioritize the use of previously registered configurations, especially those from provider
-	if _, ok := hc.extra[url]; ok {
-		// provider default health check does not set filter
-		if url != hc.url && len(filter) != 0 {
-			splitAndAddFiltersToExtra(filter, hc.extra[url])
-		}
+	if existing, ok := hc.extra[target]; ok {
+		existing.includeFilter(filter)
 
 		log.Debugln("health check url: %s exists", url)
 		return
 	}
 
 	option := &extraOption{filters: map[string]struct{}{}, expectedStatus: expectedStatus}
-	splitAndAddFiltersToExtra(filter, option)
-	hc.extra[url] = option
+	option.includeFilter(filter)
+	hc.extra[target] = option
 }
 
-func splitAndAddFiltersToExtra(filter string, option *extraOption) {
-	filter = strings.TrimSpace(filter)
-	if len(filter) != 0 {
-		for _, regex := range strings.Split(filter, "`") {
-			regex = strings.TrimSpace(regex)
-			if len(regex) != 0 {
-				option.filters[regex] = struct{}{}
-			}
+// A nil set includes every node; adding more groups cannot narrow it.
+func (o *extraOption) includeFilter(filter string) {
+	if o.filters == nil {
+		return
+	}
+	anyPattern := false
+	for _, part := range strings.Split(filter, "`") {
+		if pattern := strings.TrimSpace(part); pattern != "" {
+			o.filters[pattern] = struct{}{}
+			anyPattern = true
 		}
+	}
+	if !anyPattern {
+		o.filters = nil
 	}
 }
 
@@ -131,15 +142,9 @@ func (hc *HealthCheck) check() {
 		b := new(errgroup.Group)
 		b.SetLimit(10)
 
-		// execute default health check
-		option := &extraOption{filters: nil, expectedStatus: hc.expectedStatus}
-		hc.execute(b, hc.url, id, option)
-
-		// execute extra health check
-		if len(hc.extra) != 0 {
-			for url, option := range hc.extra {
-				hc.execute(b, url, id, option)
-			}
+		hc.execute(b, C.URLTestTarget{URL: hc.url, Type: hc.testType}, id, &extraOption{expectedStatus: hc.expectedStatus})
+		for target, option := range hc.extra {
+			hc.execute(b, target, id, option)
 		}
 		_ = b.Wait()
 		log.Debugln("Finish A Health Checking {%s}", id)
@@ -147,25 +152,20 @@ func (hc *HealthCheck) check() {
 	})
 }
 
-func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extraOption) {
-	url = strings.TrimSpace(url)
-	if len(url) == 0 {
+func (hc *HealthCheck) execute(b *errgroup.Group, target C.URLTestTarget, uid string, option *extraOption) {
+	target.URL = strings.TrimSpace(target.URL)
+	if target.URL == "" {
 		log.Debugln("Health Check has been skipped due to testUrl is empty, {%s}", uid)
 		return
 	}
 
 	var filterReg *regexp2.Regexp
-	var expectedStatus utils.IntRanges[uint16]
-	if option != nil {
-		expectedStatus = option.expectedStatus
-		if len(option.filters) != 0 {
-			filters := make([]string, 0, len(option.filters))
-			for filter := range option.filters {
-				filters = append(filters, filter)
-			}
-
-			filterReg = regexp2.MustCompile(strings.Join(filters, "|"), regexp2.None)
+	if len(option.filters) != 0 {
+		filters := make([]string, 0, len(option.filters))
+		for filter := range option.filters {
+			filters = append(filters, filter)
 		}
+		filterReg = regexp2.MustCompile(strings.Join(filters, "|"), regexp2.None)
 	}
 
 	for _, proxy := range hc.proxies {
@@ -180,9 +180,9 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 		b.Go(func() error {
 			ctx, cancel := context.WithTimeout(hc.ctx, hc.timeout)
 			defer cancel()
-			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
-			_, _ = p.URLTest(ctx, url, expectedStatus)
-			log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
+			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), target.URL, uid)
+			_, _ = C.URLTestWithOptions(p, ctx, target.URL, C.URLTestOptions{Type: target.Type, ExpectedStatus: option.expectedStatus})
+			log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), target.URL, target.Alive(p), target.Delay(p), uid)
 			return nil
 		})
 	}
@@ -193,6 +193,10 @@ func (hc *HealthCheck) close() {
 }
 
 func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16]) *HealthCheck {
+	return NewHealthCheckWithTestType(proxies, url, timeout, interval, lazy, expectedStatus, C.URLTestTypeDefault)
+}
+
+func NewHealthCheckWithTestType(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16], testType C.URLTestType) *HealthCheck {
 	if url == "" {
 		expectedStatus = nil
 		interval = 0
@@ -208,10 +212,11 @@ func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, 
 		proxies:        proxies,
 		url:            url,
 		timeout:        time.Duration(timeout) * time.Millisecond,
-		extra:          map[string]*extraOption{},
+		extra:          map[C.URLTestTarget]*extraOption{},
 		interval:       time.Duration(interval) * time.Second,
 		lazy:           lazy,
 		expectedStatus: expectedStatus,
+		testType:       testType,
 		singleDo:       singledo.NewSingle[struct{}](time.Second),
 	}
 }

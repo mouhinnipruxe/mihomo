@@ -50,7 +50,7 @@ func TestLoadBalanceHashKeyInUserSurvivesADestinationChange(t *testing.T) {
 	proxies := balancedProxies(8)
 	hosts := []string{"a.example.com", "b.example.org", "c.example.net", "d.example.io"}
 
-	byUser := strategyConsistentHashing(testUrl, getKeyWithInUser(getKey))
+	byUser := strategyConsistentHashing(C.URLTestTarget{URL: testUrl}, getKeyWithInUser(getKey))
 	pinned := indexOf(t, proxies, byUser(proxies, request("job-1", hosts[0]), false))
 	for _, host := range hosts {
 		selected := byUser(proxies, request("job-1", host), false)
@@ -87,13 +87,13 @@ func TestLoadBalanceHashKeyInUserKeepsUsersDistinct(t *testing.T) {
 // address cannot separate its own concurrent jobs without a supplied identity.
 func TestLoadBalanceHashKeyInUserSeparatesJobsSharingASourceAddress(t *testing.T) {
 	proxies := balancedProxies(8)
-	strategy := strategyStickySessions(testUrl, getKeyWithInUser(getKeyWithSrcAndDst))
+	strategy := strategyStickySessions(C.URLTestTarget{URL: testUrl}, getKeyWithInUser(getKeyWithSrcAndDst))
 
 	first := indexOf(t, proxies, strategy(proxies, request("job-1", "a.example.com"), false))
 	require.Equal(t, first,
 		indexOf(t, proxies, strategy(proxies, request("job-1", "b.example.org"), false)))
 
-	shared := strategyStickySessions(testUrl, getKeyWithSrcAndDst)
+	shared := strategyStickySessions(C.URLTestTarget{URL: testUrl}, getKeyWithSrcAndDst)
 	require.Equal(t,
 		indexOf(t, proxies, shared(proxies, request("job-1", "a.example.com"), false)),
 		indexOf(t, proxies, shared(proxies, request("job-2", "a.example.com"), false)),

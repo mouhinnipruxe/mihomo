@@ -164,7 +164,7 @@ func (lb *LoadBalance) IsL3Protocol(metadata *C.Metadata) bool {
 	return lb.Unwrap(metadata, false).IsL3Protocol(metadata)
 }
 
-func strategyRoundRobin(url string) strategyFn {
+func strategyRoundRobin(target C.URLTestTarget) strategyFn {
 	idx := 0
 	idxMutex := sync.Mutex{}
 	return func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy {
@@ -183,7 +183,7 @@ func strategyRoundRobin(url string) strategyFn {
 		for ; i < length; i++ {
 			id := (idx + i) % length
 			proxy := proxies[id]
-			if proxy.AliveForTestUrl(url) {
+			if target.Alive(proxy) {
 				i++
 				return proxy
 			}
@@ -193,7 +193,7 @@ func strategyRoundRobin(url string) strategyFn {
 	}
 }
 
-func strategyConsistentHashing(url string, keyOf keyFn) strategyFn {
+func strategyConsistentHashing(target C.URLTestTarget, keyOf keyFn) strategyFn {
 	maxRetry := 5
 	return func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy {
 		key := utils.MapHash(keyOf(metadata))
@@ -201,14 +201,14 @@ func strategyConsistentHashing(url string, keyOf keyFn) strategyFn {
 		for i := 0; i < maxRetry; i, key = i+1, key+1 {
 			idx := jumpHash(key, buckets)
 			proxy := proxies[idx]
-			if proxy.AliveForTestUrl(url) {
+			if target.Alive(proxy) {
 				return proxy
 			}
 		}
 
 		// when availability is poor, traverse the entire list to get the available nodes
 		for _, proxy := range proxies {
-			if proxy.AliveForTestUrl(url) {
+			if target.Alive(proxy) {
 				return proxy
 			}
 		}
@@ -217,7 +217,7 @@ func strategyConsistentHashing(url string, keyOf keyFn) strategyFn {
 	}
 }
 
-func strategyStickySessions(url string, keyOf keyFn) strategyFn {
+func strategyStickySessions(target C.URLTestTarget, keyOf keyFn) strategyFn {
 	ttl := time.Minute * 10
 	maxRetry := 5
 	lruCache := lru.New[uint64, int](
@@ -234,7 +234,7 @@ func strategyStickySessions(url string, keyOf keyFn) strategyFn {
 		nowIdx := idx
 		for i := 1; i < maxRetry; i++ {
 			proxy := proxies[nowIdx]
-			if proxy.AliveForTestUrl(url) {
+			if target.Alive(proxy) {
 				if !has || nowIdx != idx {
 					lruCache.Set(key, nowIdx)
 				}
@@ -266,6 +266,7 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 		"type":           lb.Type().String(),
 		"all":            all,
 		"testUrl":        lb.testUrl,
+		"testType":       lb.testType.String(),
 		"expectedStatus": lb.expectedStatus,
 		"hidden":         lb.Hidden(),
 		"icon":           lb.Icon(),
@@ -291,18 +292,19 @@ func NewLoadBalance(option GroupCommonOption, loadBalanceOption LoadBalanceOptio
 	if err != nil {
 		return nil, err
 	}
+	target := C.URLTestTarget{URL: option.URL, Type: option.urlTestType()}
 	switch loadBalanceOption.Strategy {
 	case "", "consistent-hashing":
-		strategyFn = strategyConsistentHashing(option.URL, withKey(getKey))
+		strategyFn = strategyConsistentHashing(target, withKey(getKey))
 	case "round-robin":
 		// Rejected rather than ignored: round-robin hashes nothing, so a
 		// hash-key here means the config expects stickiness it will not get.
 		if loadBalanceOption.HashKey != "" {
 			return nil, fmt.Errorf("%w: round-robin does not hash", errHashKey)
 		}
-		strategyFn = strategyRoundRobin(option.URL)
+		strategyFn = strategyRoundRobin(target)
 	case "sticky-sessions":
-		strategyFn = strategyStickySessions(option.URL, withKey(getKeyWithSrcAndDst))
+		strategyFn = strategyStickySessions(target, withKey(getKeyWithSrcAndDst))
 	default:
 		return nil, fmt.Errorf("%w: %s", errStrategy, loadBalanceOption.Strategy)
 	}
@@ -319,6 +321,7 @@ func NewLoadBalance(option GroupCommonOption, loadBalanceOption LoadBalanceOptio
 			MaxFailedTimes: option.MaxFailedTimes,
 			EmptyFallback:  emptyFallback,
 			Providers:      providers,
+			TestType:       option.urlTestType(),
 		}),
 		strategyFn:     strategyFn,
 		disableUDP:     option.DisableUDP,

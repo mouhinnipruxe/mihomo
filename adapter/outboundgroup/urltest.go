@@ -103,9 +103,10 @@ func (u *URLTest) healthCheck() {
 func (u *URLTest) fast(touch bool) C.Proxy {
 	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
 		proxies := u.GetProxies(touch)
+		target := C.URLTestTarget{URL: u.testUrl, Type: u.testType}
 		if u.selected != "" {
 			for _, proxy := range proxies {
-				if !proxy.AliveForTestUrl(u.testUrl) {
+				if !target.Alive(proxy) {
 					continue
 				}
 				if proxy.Name() == u.selected {
@@ -115,29 +116,27 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 			}
 		}
 
-		fast := proxies[0]
-		minDelay := fast.LastDelayForTestUrl(u.testUrl)
-		fastNotExist := true
-
-		for _, proxy := range proxies[1:] {
-			if u.fastNode != nil && proxy.Name() == u.fastNode.Name() {
-				fastNotExist = false
-			}
-
-			if !proxy.AliveForTestUrl(u.testUrl) {
+		var fastest, current C.Proxy
+		var minDelay uint16
+		for _, proxy := range proxies {
+			if !target.Alive(proxy) {
 				continue
 			}
-
-			delay := proxy.LastDelayForTestUrl(u.testUrl)
-			if delay < minDelay {
-				fast = proxy
-				minDelay = delay
+			if u.fastNode != nil && proxy.Name() == u.fastNode.Name() {
+				current = proxy
 			}
-
+			delay := target.Delay(proxy)
+			if fastest == nil || delay < minDelay {
+				fastest, minDelay = proxy, delay
+			}
 		}
-		// tolerance
-		if u.fastNode == nil || fastNotExist || !u.fastNode.AliveForTestUrl(u.testUrl) || u.fastNode.LastDelayForTestUrl(u.testUrl) > fast.LastDelayForTestUrl(u.testUrl)+u.tolerance {
-			u.fastNode = fast
+		switch {
+		case current != nil && uint32(target.Delay(current)) <= uint32(minDelay)+uint32(u.tolerance):
+			u.fastNode = current
+		case fastest != nil:
+			u.fastNode = fastest
+		default:
+			u.fastNode = proxies[0]
 		}
 		return u.fastNode, nil
 	})
@@ -172,6 +171,7 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 		"now":            u.Now(),
 		"all":            all,
 		"testUrl":        u.testUrl,
+		"testType":       u.testType.String(),
 		"expectedStatus": u.expectedStatus,
 		"fixed":          u.selected,
 		"hidden":         u.Hidden(),
@@ -209,6 +209,7 @@ func NewURLTest(option GroupCommonOption, urlTestOption URLTestOption, emptyFall
 			MaxFailedTimes: option.MaxFailedTimes,
 			EmptyFallback:  emptyFallback,
 			Providers:      providers,
+			TestType:       option.urlTestType(),
 		}),
 		fastSingle:     singledo.NewSingle[C.Proxy](time.Second * 10),
 		disableUDP:     option.DisableUDP,

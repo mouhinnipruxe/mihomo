@@ -43,9 +43,34 @@ func (p *Proxy) URLTestWithOptions(ctx context.Context, rawURL string, options C
 		return p.urlTest(ctx, options.Target(rawURL), options.ExpectedStatus)
 	case C.URLTestTypeDockerRegistry:
 		return p.dockerRegistryURLTest(ctx, rawURL)
+	case C.URLTestTypeClaude:
+		return p.claudeURLTest(ctx)
 	default:
 		return 0, fmt.Errorf("unsupported URL test type: %s", options.Type)
 	}
+}
+
+func (p *Proxy) claudeURLTest(ctx context.Context) (delay uint16, err error) {
+	var satisfied bool
+	defer func() {
+		p.recordURLTestResult(C.URLTestTarget{URL: C.ClaudeTestURL, Type: C.URLTestTypeClaude}, delay, satisfied, err)
+	}()
+
+	measured, err := p.doURLTestRequest(ctx, http.MethodHead, C.ClaudeTestURL, UnifiedDelay.Load(), validateClaudeResponse)
+	if err != nil {
+		return 0, err
+	}
+
+	satisfied = true
+	delay = successfulDelay(measured)
+	return delay, nil
+}
+
+func validateClaudeResponse(resp *http.Response) error {
+	if strings.Contains(strings.ToLower(resp.Header.Get("Location")), "app-unavailable-in-region") {
+		return fmt.Errorf("Claude is unavailable in this region")
+	}
+	return nil
 }
 
 func (p *Proxy) dockerRegistryURLTest(ctx context.Context, manifestURL string) (delay uint16, err error) {

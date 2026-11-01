@@ -1775,6 +1775,7 @@ proxy-groups:
     # lazy: true
     # expected-status: 204 # 当健康检查返回状态码与期望值不符时，认为节点不可用
     # test-type: docker-registry # 启用时将下方 url 换为 Registry manifest 地址，或删除 url 以继承 provider 的 manifest 地址；均未指定时检查 Docker Hub 的 alpine:latest。系统无 docker 命令时回退为普通 HEAD 测速。
+    # test-type: claude-test # 固定测试 https://claude.ai/，响应跳转到 app-unavailable-in-region 时认为节点不可用
     url: "https://cp.cloudflare.com/generate_204"
     interval: 300
 

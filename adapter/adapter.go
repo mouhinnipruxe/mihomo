@@ -120,9 +120,11 @@ func (p *Proxy) LastDelayForTestUrl(url string) (delay uint16) {
 
 // The URL-only API keeps displaying the dedicated probe when one is configured.
 func (p *Proxy) displayTarget(url string) C.URLTestTarget {
-	target := C.URLTestTarget{URL: url, Type: C.URLTestTypeDockerRegistry}
-	if _, ok := p.extra.Load(target); ok {
-		return target
+	for _, typ := range []C.URLTestType{C.URLTestTypeClaude, C.URLTestTypeDockerRegistry} {
+		target := C.URLTestTarget{URL: url, Type: typ}
+		if _, ok := p.extra.Load(target); ok {
+			return target
+		}
 	}
 	return C.URLTestTarget{URL: url}
 }

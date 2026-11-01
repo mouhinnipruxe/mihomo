@@ -71,6 +71,7 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 }
 
 func (hc *HealthCheck) registerHealthCheckTaskWithOptions(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint, testType C.URLTestType) {
+	url = C.URLTestURL(testType, url)
 	url = strings.TrimSpace(url)
 	if len(url) == 0 {
 		log.Debugln("ignore invalid health check url: %s", url)
@@ -197,6 +198,7 @@ func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, 
 }
 
 func NewHealthCheckWithTestType(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16], testType C.URLTestType) *HealthCheck {
+	url = C.URLTestURL(testType, url)
 	if url == "" {
 		expectedStatus = nil
 		interval = 0

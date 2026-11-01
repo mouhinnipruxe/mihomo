@@ -238,6 +238,7 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 }
 
 func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (map[string]uint16, error) {
+	url = C.URLTestURL(gb.testType, url)
 	var wg sync.WaitGroup
 	var lock sync.Mutex
 	mp := map[string]uint16{}

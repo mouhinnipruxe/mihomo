@@ -84,6 +84,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	if testType == C.URLTestTypeDockerRegistry {
 		defaultURL = C.DockerRegistryTestURL
 	}
+	groupOption.URL = C.URLTestURL(testType, groupOption.URL)
 
 	if groupOption.EmptyFallback == "" {
 		groupOption.EmptyFallback = "COMPATIBLE"

@@ -14,9 +14,12 @@ type URLTestType uint8
 const (
 	URLTestTypeDefault URLTestType = iota
 	URLTestTypeDockerRegistry
+	URLTestTypeClaude
 )
 
 const DockerRegistryTestURL = "https://registry-1.docker.io/v2/library/alpine/manifests/latest"
+
+const ClaudeTestURL = "https://claude.ai/"
 
 func (t URLTestType) String() string {
 	switch t {
@@ -24,6 +27,8 @@ func (t URLTestType) String() string {
 		return "default"
 	case URLTestTypeDockerRegistry:
 		return "docker-registry"
+	case URLTestTypeClaude:
+		return "claude-test"
 	default:
 		return "unknown"
 	}
@@ -35,6 +40,8 @@ func ParseURLTestType(value string) (URLTestType, error) {
 		return URLTestTypeDefault, nil
 	case "docker-registry":
 		return availableURLTestType(URLTestTypeDockerRegistry), nil
+	case "claude-test":
+		return URLTestTypeClaude, nil
 	default:
 		return URLTestTypeDefault, fmt.Errorf("unsupported URL test type: %s", value)
 	}
@@ -47,6 +54,13 @@ func availableURLTestType(testType URLTestType) URLTestType {
 		}
 	}
 	return testType
+}
+
+func URLTestURL(testType URLTestType, configuredURL string) string {
+	if testType == URLTestTypeClaude {
+		return ClaudeTestURL
+	}
+	return configuredURL
 }
 
 // URLTestTarget identifies probes with the same success criteria.
@@ -97,6 +111,7 @@ func URLTestWithOptions(proxy Proxy, ctx context.Context, url string, options UR
 	if effective := availableURLTestType(options.Type); effective != options.Type {
 		options.fallbackFrom, options.Type = options.Type, effective
 	}
+	url = URLTestURL(options.Type, url)
 	if tester, ok := proxy.(URLTesterWithOptions); ok {
 		return tester.URLTestWithOptions(ctx, url, options)
 	}
